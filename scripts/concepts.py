@@ -118,3 +118,32 @@ THRESHOLDS = {
     "current_ratio_ttm": [1],
     "ebitda_int_ttm": [2.5],
 }
+
+# 지표마다 계산에 쓰는 개념(차트 아래 '사용 데이터' 주석에 표시)
+_EBITDA = ["op", "da"]
+_CASH = ["cash", "st_fin_prod", "st_sec"]
+INPUTS = {
+    "revenue": ["revenue"], "revenue_ttm": ["revenue"], "revenue_yoy": ["revenue"], "revenue_growth": ["revenue"],
+    "cogs_ratio": ["cogs", "revenue"], "opex": ["cogs", "sga"],
+    "op": ["op"], "op_ttm": ["op"],
+    "op_margin": ["op", "revenue"], "op_margin_ttm": ["op", "revenue"], "op_margin_3y": ["op", "revenue"],
+    "ebitda": _EBITDA, "ebitda_ttm": _EBITDA,
+    "ebitda_margin_ttm": _EBITDA + ["revenue"], "ebitda_margin_3y": _EBITDA + ["revenue"],
+    "ni": ["ni"], "ni_ttm": ["ni"], "ni_margin_ttm": ["ni", "revenue"],
+    "debt": ["debt"],
+    "debt_ebitda": ["debt"] + _EBITDA, "debt_ebitda_ttm": ["debt"] + _EBITDA, "debt_ebitda_3y": ["debt"] + _EBITDA,
+    "cash_like": _CASH, "net_debt": ["debt"] + _CASH, "lease": ["lease"], "net_debt_lease": ["debt"] + _CASH + ["lease"],
+    "netdebt_ebitda_ttm": ["debt"] + _CASH + _EBITDA, "netdebt_ebitda_3y": ["debt"] + _CASH + _EBITDA,
+    "dep_ratio": ["debt", "assets"], "dep_ratio_ttm": ["debt", "assets"], "dep_ratio_3y": ["debt", "assets"],
+    "dep_ratio_lease_ttm": ["debt", "lease", "assets"],
+    "debt_ratio": ["liab", "equity"], "debt_ratio_ttm": ["liab", "equity"], "debt_ratio_3y": ["liab", "equity"],
+    "leverage": ["assets", "equity"], "leverage_ttm": ["assets", "equity"], "leverage_3y": ["assets", "equity"],
+    "st_fin_share": ["st_fin_liab", "lt_fin_liab"], "st_debt_share": ["st_debt", "cur_ltd", "debt"],
+    "liq_gap": ["cur_assets", "cur_liab"], "current_ratio_ttm": ["cur_assets", "cur_liab"],
+    "cash_cl_ttm": ["cash", "cur_liab"],
+    "ocf": ["ocf"], "ocf_ttm": ["ocf"], "ocf_op_ttm": ["ocf", "op"],
+    "ebitda_int_ttm": _EBITDA + ["interest"],
+    "fcf": ["ocf", "capex", "interest"], "fcf_ttm": ["ocf", "capex", "interest"],
+    "fcf_lease": ["ocf", "capex", "interest", "lease"], "fcf_lease_ttm": ["ocf", "capex", "interest", "lease"],
+    "dividend_ttm": ["dividend"],
+}

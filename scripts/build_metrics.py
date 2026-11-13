@@ -22,7 +22,7 @@ import openpyxl
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from concepts import CONCEPTS, METRICS, THRESHOLDS  # noqa: E402
+from concepts import CONCEPTS, INPUTS, METRICS, THRESHOLDS  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UNIT = 100_000  # 천원 -> 억원
@@ -101,8 +101,8 @@ def cand_label(recs, cand: str) -> str:
 
 
 def concept_series(recs, freq: str, cands: list[str]):
-    """후보를 순서대로 시도해 기간별 첫 유효값. (값, 사용한 후보 index) 반환."""
-    out = src = None
+    """후보를 순서대로 시도해 기간별 첫 유효값. (값, 사용한 후보 index, 실제 아이템코드·이름) 반환."""
+    out = src = item = None
     for k, cand in enumerate(cands):
         sign = -1.0 if cand.startswith("-") else 1.0
         for rec in recs:
@@ -115,10 +115,12 @@ def concept_series(recs, freq: str, cands: list[str]):
             if out is None:
                 out = pd.Series(float("nan"), index=s.index)
                 src = pd.Series(float("nan"), index=s.index)
+                item = pd.Series(None, index=s.index, dtype="object")
             fill = out.isna() & s.notna()
             out[fill] = s[fill]
             src[fill] = k
-    return out, src
+            item[fill] = f"{rec['icode']}|{rec['iname']}"
+    return out, src, item
 
 
 # ---------------------------------------------------------------- 지표 계산
@@ -228,12 +230,13 @@ def build(path: str):
             comp["standard"][basis] = brecs[0]["std"]
             comp["bases"][basis] = {}
             for fk, freq, w, w3, k in (("Q", "4Q", 4, 12, 4), ("A", "ANNUAL", 1, 3, 1)):
-                raw, src = {}, {}
+                raw, src, used = {}, {}, {}
                 for ck, (_, _, cands) in CONCEPTS.items():
-                    s, sc = concept_series(brecs, freq, cands)
+                    s, sc, it = concept_series(brecs, freq, cands)
                     idx = periods if fk == "Q" else sorted({p[:4] for p in periods})
                     raw[ck] = (s if s is not None else pd.Series(dtype="float64")).reindex(idx)
                     src[ck] = (sc if sc is not None else pd.Series(dtype="float64")).reindex(idx)
+                    used[ck] = (it if it is not None else pd.Series(dtype="object")).reindex(idx)
                 m = compute(raw, w, w3, k)
                 df = pd.DataFrame(m)
                 live = df.notna().any(axis=1)
@@ -251,6 +254,12 @@ def build(path: str):
                     "src": {ck: [None if pd.isna(src[ck].get(p)) else int(src[ck].get(p)) for p in idx]
                             for ck in src},
                 }
+                # 기간별로 실제 쓴 DataGuide 아이템(코드·이름): items 목록 + 개념별 index
+                items = sorted({x for ck in used for x in used[ck].dropna()})
+                pos = {x: i for i, x in enumerate(items)}
+                comp["bases"][basis][fk]["items"] = [x.split("|", 1) for x in items]
+                comp["bases"][basis][fk]["item"] = {
+                    ck: [None if pd.isna(used[ck].get(p)) else pos[used[ck].get(p)] for p in idx] for ck in used}
                 for mk in df.columns:
                     for p, v in zip(idx, df[mk]):
                         if pd.notna(v):
@@ -275,8 +284,8 @@ def build(path: str):
         "unit": "억원",
         "concepts": {k: {"label": v[0], "kind": v[1], "candidates": [cand_label(recs, c) for c in v[2]]}
                      for k, v in CONCEPTS.items()},
-        "metrics": [{"key": k, "label": lb, "group": g, "unit": u, "thresholds": THRESHOLDS.get(k, [])}
-                    for k, lb, g, u in METRICS],
+        "metrics": [{"key": k, "label": lb, "group": g, "unit": u, "thresholds": THRESHOLDS.get(k, []),
+                     "inputs": INPUTS.get(k, [])} for k, lb, g, u in METRICS],
         "companies": companies,
     }
     os.makedirs(os.path.join(ROOT, "output"), exist_ok=True)

@@ -79,3 +79,4 @@ th.l { background:var(--head); z-index:3; }
 tr.grp td { background:var(--head); font-weight:700; text-align:left; }
 th.pre { color:var(--muted); }
 .placeholder { grid-column:1/-1; padding:48px 0; text-align:center; }
+.card .src { font-size:11px; color:#7f7f7f; padding:2px 8px 8px; line-height:1.4; word-break:keep-all; }

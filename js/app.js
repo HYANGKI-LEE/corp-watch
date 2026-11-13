@@ -181,6 +181,7 @@ const REF = {
   yStand: 3, xStand: 6,         // 눈금 라벨 간격
   legItem: 42,  // 범례 선 견본 길이
   ref: 2,       // 기준선(점선) 굵기
+  unitY: 8,     // 축 단위 "(배)"를 맨 위 눈금보다 얼마나 위에
 };
 const FONT_FAMILY = "'Malgun Gothic','맑은 고딕',sans-serif";
 const BAR = ["#2e75b6", "#a6a6a6", "#7f7f7f"];
@@ -251,7 +252,31 @@ function disposeCharts() { charts.forEach((el) => Plotly.purge(el)); charts = []
 function chartTitle(def, unit) {
   let t = def.t;
   if (state.freq === "A") t = t.replace("(4분기 누적, YoY)", "(YoY)").replace("(4분기 누적)", "").replace("4분기 누적", "연간").trim();
-  return unit === "억원" ? `${t} (억원)` : t;
+  return t;   // 단위는 제목이 아니라 축 위에 표시
+}
+
+// 축 눈금 라벨: 엑셀처럼 %는 "-5%", 금액·배수는 음수를 괄호로 "(2)"
+function tickText(val, unit, step) {
+  const d = step < 1 ? (step < 0.1 ? 2 : 1) : 0;
+  if (unit === "%") return val.toFixed(d) + "%";
+  const s = Math.abs(val).toLocaleString("ko-KR", { minimumFractionDigits: d, maximumFractionDigits: d });
+  return val < 0 ? `(${s})` : s;
+}
+function ticksOf(ax, unit) {
+  const vals = [];
+  for (let x = ax.min; x <= ax.max + ax.step * 1e-6; x += ax.step) vals.push(+x.toFixed(10));
+  return { tickmode: "array", tickvals: vals, ticktext: vals.map((x) => tickText(Math.abs(x) < 1e-9 ? 0 : x, unit, ax.step)) };
+}
+const UNIT_LABEL = { "억원": "(억원)", "배": "(배)" };   // %는 눈금에 붙이므로 따로 안 적음
+
+// 차트 아래 주석: 이 차트 계산에 실제로 쓴 DataGuide 아이템(코드)
+function sourceNote(v, keys) {
+  const cks = [...new Set(keys.flatMap((k) => META[k].inputs || []))];
+  const used = new Set();
+  cks.forEach((ck) => ((v.b.item || {})[ck] || []).slice(v.start).forEach((i) => i != null && used.add(i)));
+  const items = [...used].map((i) => v.b.items[i]).sort((a, b) => a[0].localeCompare(b[0]));
+  const basis = state.basis === "C" ? "연결" : "별도";
+  return `자료: DataGuide(${basis}) · ` + (items.length ? items.map(([c, nm]) => `${nm} ${c}`).join(", ") : "–");
 }
 
 // 보기 좋은 눈금 간격(1·2·5 x 10^n, 엑셀과 같은 방식)과 축 범위(엑셀처럼 눈금 단위로 끊음)
@@ -289,7 +314,7 @@ function renderCharts(v) {
     const unit = META[keys[0]].unit;
     const card = document.createElement("div");
     card.className = "card";
-    card.innerHTML = `<div class="chart"></div>`;
+    card.innerHTML = `<div class="chart"></div><div class="src"></div>`;
     box.appendChild(card);
     const el = card.querySelector(".chart");
     const W = el.clientWidth, H = W * 6 / 8;
@@ -361,7 +386,6 @@ function renderCharts(v) {
     const axisStyle = { showline: true, linecolor: AXIS, linewidth: REF.axis * k,
       ticks: "outside", ticklen: REF.tick * k, tickwidth: REF.axis * k, tickcolor: AXIS,
       ticklabelstandoff: REF.yStand * k, showgrid: false, zeroline: false, automargin: false };
-    const fmtOf = (u) => ({ ticksuffix: u === "%" ? "%" : u === "배" ? "배" : "", tickformat: u === "억원" ? "," : "" });
     const layout = {
       width: W, height: H, font,
       paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
@@ -383,15 +407,24 @@ function renderCharts(v) {
                ticks: atBottom ? "outside" : "", tickson: "boundaries", ticklen: REF.tick * k,
                tickwidth: REF.axis * k, tickcolor: AXIS,
                showgrid: false, zeroline: false, automargin: false },
-      yaxis: { range: [ax.min, ax.max], tick0: ax.min, dtick: ax.step, autorange: false, ...axisStyle, ...fmtOf(unit) },
-      ...(ax2 ? { yaxis2: { overlaying: "y", side: "right", range: [ax2.min, ax2.max], tick0: ax2.min, dtick: ax2.step,
-                            autorange: false, ...axisStyle, ...fmtOf(unit2) } } : {}),
+      yaxis: { range: [ax.min, ax.max], autorange: false, ...axisStyle, ...ticksOf(ax, unit) },
+      ...(ax2 ? { yaxis2: { overlaying: "y", side: "right", range: [ax2.min, ax2.max],
+                            autorange: false, ...axisStyle, ...ticksOf(ax2, unit2) } } : {}),
       shapes,
-      annotations: lblIdx.map((i) => ({
-        xref: "x", x: i - 0.5, yref: "paper", y: 0, yanchor: "top", xanchor: "center",
-        yshift: -(REF.tick + REF.xStand) * k, showarrow: false, text: "'" + v.periods[i].slice(2, 4), font,
-      })),
+      annotations: [
+        ...lblIdx.map((i) => ({
+          xref: "x", x: i - 0.5, yref: "paper", y: 0, yanchor: "top", xanchor: "center",
+          yshift: -(REF.tick + REF.xStand) * k, showarrow: false, text: "'" + v.periods[i].slice(2, 4), font,
+        })),
+        // 단위는 축 맨 위에 "(배)", "(억원)"처럼 (엑셀 견본과 같은 위치)
+        ...[[unit, 0, "right"], ...(ax2 ? [[unit2, 1, "left"]] : [])].filter(([u]) => UNIT_LABEL[u]).map(([u, x, anchor]) => ({
+          xref: "paper", x, xanchor: anchor, xshift: (anchor === "right" ? -1 : 1) * REF.yStand * k,
+          yref: "paper", y: 1, yanchor: "bottom", yshift: REF.unitY * k,
+          showarrow: false, text: UNIT_LABEL[u], font,
+        })),
+      ],
     };
+    card.querySelector(".src").textContent = sourceNote(v, [...keys, ...keys2]);
     const config = {
       responsive: false, displaylogo: false, displayModeBar: "hover", locale: "ko",
       modeBarButtons: [
