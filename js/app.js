@@ -166,10 +166,20 @@ function renderKpis(v) {
 }
 
 // ---------------------------------------------------------------- 차트 (엑셀 스타일, Plotly)
-// 기준 크기 = 엑셀 차트 가로 8cm x 세로 6cm (96dpi). 글꼴·선·여백을 이 크기 기준으로 정하고,
-// 화면에 그릴 때는 실제 폭에 맞춰 전부 같은 비율로 키운다 -> 어느 폭에서 보든 엑셀 그림과 비율이 같다.
-const BASE_W = 8 / 2.54 * 96;       // 302.4px
-const PT = (pt) => pt * 96 / 72;    // pt -> px (기준 크기에서)
+// 엑셀 견본 그림(사용자가 준 EBIT 마진 차트, 폭 475px)에서 잰 치수. 화면 폭에 맞춰 전부 같은 배율로 키운다
+// -> 어느 폭에서 보든·복사하든 견본과 글자·선·여백 비율이 같다. 가로:세로는 8:6.
+const REF_W = 475;
+const REF = {
+  font: 13.7,   // 축·범례 글자
+  title: 16.5,  // 제목
+  titleY: 30,   // 제목 세로 위치(위에서)
+  l: 52, r: 13, t: 57, b: 33,   // 그림 영역 여백
+  axis: 1,      // 축선 굵기
+  tick: 5,      // 눈금 길이
+  yStand: 3, xStand: 6,         // 눈금 라벨 간격
+  legItem: 42,  // 범례 선 견본 길이
+  ref: 2,       // 기준선(점선) 굵기
+};
 const FONT_FAMILY = "'Malgun Gothic','맑은 고딕',sans-serif";
 const BAR = ["#2e75b6", "#a6a6a6", "#7f7f7f"];
 const RED = "#ff0000", BLUE = "#0070c0";
@@ -186,16 +196,15 @@ const sameFamily = (keys) => keys.some((x) => /_(ttm|3y)$/.test(x)) && new Set(k
 
 function lineStyle(key, keys, i) {
   const windowed = sameFamily(keys);
-  // 굵기는 엑셀 pt 기준(2.25pt 굵게, 1.5pt 보통, 0.75pt 가늘게)
-  const thick = { color: "#000000", width: PT(2.25) };
+  const thick = { color: "#000000", width: 4.5 };   // 굵기는 견본 기준 px
   if (keys.length === 1) return thick;
   if (windowed) {
     const has3y = keys.some((k) => k.endsWith("_3y"));
     if (key.endsWith("_3y")) return thick;
-    if (key.endsWith("_ttm")) return has3y ? { color: "#a6a6a6", width: PT(1.5) } : thick;
-    return { color: "#c9c9c9", width: PT(0.75) };
+    if (key.endsWith("_ttm")) return has3y ? { color: "#a6a6a6", width: 3 } : thick;
+    return { color: "#c9c9c9", width: 1.5 };
   }
-  return [thick, { color: "#a6a6a6", width: PT(2.25) }, { color: BLUE, width: PT(1.5) }][i] || { color: "#7f7f7f", width: PT(0.75) };
+  return [thick, { color: "#a6a6a6", width: 4.5 }, { color: BLUE, width: 3 }][i] || { color: "#7f7f7f", width: 1.5 };
 }
 
 // 그림 복사 버튼(클립보드에 PNG)
@@ -243,24 +252,29 @@ function chartTitle(def, unit) {
   return unit === "억원" ? `${t} (억원)` : t;
 }
 
+// 보기 좋은 눈금 간격(1·2·5 x 10^n, 엑셀과 같은 방식)과 축 범위(엑셀처럼 눈금 단위로 끊음)
+function niceAxis(lo, hi, target = 5) {
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const raw = (hi - lo) / target;
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 5, 10].map((m) => m * p).find((s) => s >= raw);
+  return { step, min: Math.floor(lo / step + 1e-9) * step, max: Math.ceil(hi / step - 1e-9) * step };
+}
+
 function renderCharts(v) {
   disposeCharts();
   $("#tablebox").hidden = true;
   const box = $("#charts");
   box.hidden = false;
   box.innerHTML = "";
+  const n = v.periods.length;
   const cats = v.periods.map((p, i) => periodLabel(p, state.freq) + (v.prelim[i] ? "*" : ""));
 
-  // x축 눈금: 연도만 'YY (분기는 1분기 위치). 기간이 길면 2년 간격
+  // x축: 연도마다 경계에 눈금, 라벨은 'YY. 기간이 길면 라벨은 2년 간격
   const years = new Set(v.periods.map((p) => p.slice(0, 4))).size;
   const every = years > 12 ? 2 : 1;
-  const tickIdx = v.periods.map((p, i) => i).filter((i) => {
-    const p = v.periods[i];
-    const y = +p.slice(0, 4);
-    return (state.freq === "A" || p.endsWith("-03")) && y % every === 0;
-  });
-  const tickvals = tickIdx.map((i) => cats[i]);
-  const ticktext = tickIdx.map((i) => "'" + v.periods[i].slice(2, 4));
+  const yearStart = v.periods.map((p, i) => i).filter((i) => state.freq === "A" || v.periods[i].endsWith("-03"));
+  const lblIdx = yearStart.filter((i) => +v.periods[i].slice(0, 4) % every === 0);
 
   CHARTS[state.tab].forEach((def) => {
     const keys = seriesKeys(def.s).filter((k) => META[k] && v.b.values[k]);
@@ -271,8 +285,8 @@ function renderCharts(v) {
     box.appendChild(card);
     const el = card.querySelector(".chart");
     const W = el.clientWidth, H = W * 6 / 8;
-    const k = W / BASE_W;                       // 기준(8cm) 대비 배율
-    const font = { family: FONT_FAMILY, size: PT(7) * k, color: "#000000" };
+    const k = W / REF_W;                          // 엑셀 견본 그림 대비 배율
+    const font = { family: FONT_FAMILY, size: REF.font * k, color: "#000000" };
 
     const traces = keys.map((key, i) => {
       const y = v.b.values[key].slice(v.start).map((x) => plotVal(x, unit));
@@ -285,47 +299,75 @@ function renderCharts(v) {
       } else {
         t.mode = "lines";
         const ls = lineStyle(key, keys, i);
-        t.line = { color: ls.color, width: ls.width * k };
+        t.line = { color: ls.color, width: ls.width * k, shape: "spline", smoothing: 0.5 }; // 엑셀 '완만한 선'
         t.connectgaps = false;
       }
       return t;
     });
-    if (!traces.some((t) => t.y.some((y) => y != null))) {
-      el.className = "chart empty"; el.textContent = "이 기간에 데이터가 없어요"; return;
-    }
+    const ys = traces.flatMap((t) => t.y).filter((y) => y != null);
+    if (!ys.length) { el.className = "chart empty"; el.textContent = "이 기간에 데이터가 없어요"; return; }
 
     // 기준선: 하나면 빨강, 둘이면 나쁜 쪽 빨강·좋은 쪽 파랑 (점선)
-    const th = [...new Set(keys.flatMap((k) => META[k].thresholds || []))].sort((a, b) => a - b);
-    const dir = keys.map((k) => BAD_DIR[k]).find(Boolean) || "down";
-    const shapes = th.map((t, i) => {
-      const bad = th.length === 1 || (dir === "up" ? i === th.length - 1 : i === 0);
-      return { type: "line", xref: "paper", x0: 0, x1: 1, y0: plotVal(t, unit), y1: plotVal(t, unit),
-               line: { color: bad ? RED : BLUE, width: PT(1.5) * k, dash: "dash" }, layer: "below" };
-    });
+    const th = [...new Set(keys.flatMap((kk) => META[kk].thresholds || []))].sort((a, b) => a - b);
+    const thv = th.map((t) => plotVal(t, unit));
+    const dir = keys.map((kk) => BAD_DIR[kk]).find(Boolean) || "down";
+
+    // y축 범위: 데이터·기준선(막대면 0 포함)을 눈금 단위로 감싼다
+    let lo = Math.min(...ys, ...thv), hi = Math.max(...ys, ...thv);
+    if (def.type === "bar") { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+    const ax = niceAxis(lo, hi);
+    // 가로축은 엑셀처럼 0에서 교차(0이 범위 밖이면 아래 끝)
+    const cross = ax.min < 0 && ax.max > 0 ? 0 : ax.min;
+
+    const AXIS = "#868686";
+    const atBottom = cross === ax.min;   // 가로축이 맨 아래면 Plotly 축선·눈금을 그대로 쓴다
+    const shapes = [
+      // 0에서 교차하는 가로축과 연도 경계 눈금(아래로) — 그림 영역 안이라 도형으로 그린다
+      ...(atBottom ? [] : [{ type: "line", xref: "paper", x0: 0, x1: 1, yref: "y", y0: cross, y1: cross,
+        line: { color: AXIS, width: REF.axis * k }, layer: "above" }]),
+      ...(atBottom ? [] : yearStart).map((i) => ({
+        type: "line", xref: "x", x0: i - 0.5, x1: i - 0.5, yref: "y", ysizemode: "pixel", yanchor: cross,
+        y0: 0, y1: -REF.tick * k, line: { color: AXIS, width: REF.axis * k },
+      })),
+      ...th.map((t, i) => {
+        const bad = th.length === 1 || (dir === "up" ? i === th.length - 1 : i === 0);
+        return { type: "line", xref: "paper", x0: 0, x1: 1, y0: thv[i], y1: thv[i],
+                 line: { color: bad ? RED : BLUE, width: REF.ref * k, dash: "dash" }, layer: "below" };
+      }),
+    ];
 
     const legend = traces.length > 1;
     const layout = {
-      width: W, height: H,
-      font,
+      width: W, height: H, font,
       paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
-      // 제목은 엑셀처럼 본문보다 조금 크게(9pt)
-      title: { text: chartTitle(def, unit), x: 0.5, xanchor: "center", y: 1 - 4 * k / H, yanchor: "top",
-               font: { ...font, size: PT(9) * k } },
+      title: { text: chartTitle(def, unit), x: 0.5, xanchor: "center", y: 1 - REF.titleY * k / H, yanchor: "middle",
+               font: { ...font, size: REF.title * k } },
       showlegend: legend,
-      legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1.0, yanchor: "bottom", font,
-                bgcolor: "rgba(0,0,0,0)", itemwidth: Math.max(30, 22 * k), tracegroupgap: 0 },
-      margin: { l: 30 * k, r: 8 * k, t: (legend ? 36 : 22) * k, b: 16 * k, pad: 2 * k },
+      // 범례는 엑셀 견본처럼 그림 영역 안쪽 위
+      legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1, yanchor: "top", font,
+                bgcolor: "rgba(0,0,0,0)", itemwidth: Math.max(30, REF.legItem * k), tracegroupgap: 0 },
+      margin: { l: REF.l * k, r: REF.r * k, t: REF.t * k, b: REF.b * k, pad: 0 },
       barmode: "group", bargap: 0.25, bargroupgap: 0.05,
       hovermode: "x unified",
       hoverlabel: { bgcolor: "#ffffff", bordercolor: "#a6a6a6", font: { family: FONT_FAMILY, size: 11, color: "#000000" } },
-      xaxis: { type: "category", tickmode: "array", tickvals, ticktext, tickangle: 0,
+      xaxis: { type: "category", range: [-0.5, n - 0.5], tickmode: "array",
+               tickvals: lblIdx.map((i) => cats[i]), ticktext: lblIdx.map((i) => "'" + v.periods[i].slice(2, 4)),
+               showticklabels: false,   // 라벨은 아래 annotations 로 연도 경계 눈금 가운데에 둔다
                unifiedhovertitle: { text: "<b>%{x}</b>" },
-               showline: false, showgrid: false, zeroline: false, ticks: "", fixedrange: false },
-      yaxis: { showline: false, showgrid: false, ticks: "", zeroline: unit !== "억원" ? false : true,
-               zerolinecolor: "#d9d9d9", zerolinewidth: 1,
-               ticksuffix: unit === "%" ? "%" : unit === "배" ? "배" : "", tickformat: unit === "억원" ? "," : "",
-               rangemode: def.type === "bar" ? "tozero" : "normal" },
+               showline: atBottom, linecolor: AXIS, linewidth: REF.axis * k,
+               ticks: atBottom ? "outside" : "", tickson: "boundaries", ticklen: REF.tick * k,
+               tickwidth: REF.axis * k, tickcolor: AXIS,
+               showgrid: false, zeroline: false, automargin: false },
+      yaxis: { range: [ax.min, ax.max], tick0: ax.min, dtick: ax.step, autorange: false,
+               showline: true, linecolor: AXIS, linewidth: REF.axis * k,
+               ticks: "outside", ticklen: REF.tick * k, tickwidth: REF.axis * k, tickcolor: AXIS,
+               ticklabelstandoff: REF.yStand * k, showgrid: false, zeroline: false, automargin: false,
+               ticksuffix: unit === "%" ? "%" : unit === "배" ? "배" : "", tickformat: unit === "억원" ? "," : "" },
       shapes,
+      annotations: lblIdx.map((i) => ({
+        xref: "x", x: i - 0.5, yref: "paper", y: 0, yanchor: "top", xanchor: "center",
+        yshift: -(REF.tick + REF.xStand) * k, showarrow: false, text: "'" + v.periods[i].slice(2, 4), font,
+      })),
     };
     const config = {
       responsive: false, displaylogo: false, displayModeBar: "hover", locale: "ko",
