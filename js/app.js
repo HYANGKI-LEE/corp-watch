@@ -12,7 +12,7 @@ const CHARTS = {
     { t: "EBITDA마진", type: "line", s: ["ebitda_margin_ttm", "ebitda_margin_3y"] },
     { t: "매출원가율", type: "line", s: ["cogs_ratio"] },
     { t: "당기순이익률(4분기 누적)", type: "line", s: ["ni_margin_ttm"] },
-    { t: "4분기 누적 손익", type: "line", s: ["revenue_ttm", "op_ttm", "ebitda_ttm"] },
+    { t: "4분기 누적 영업이익·EBITDA", type: "line", s: ["op_ttm", "ebitda_ttm"] },
   ],
   "레버리지": [
     { t: "차입금", type: "line", s: ["debt", "net_debt", "net_debt_lease"] },
@@ -165,7 +165,78 @@ function renderKpis(v) {
   $("#kpis").innerHTML = html;
 }
 
-function disposeCharts() { charts.forEach((c) => c.dispose()); charts = []; }
+// ---------------------------------------------------------------- 차트 (엑셀 스타일, Plotly)
+const PT7 = 7 * 96 / 72;            // 엑셀 7pt -> px
+const FONT = { family: "'Malgun Gothic','맑은 고딕',sans-serif", size: PT7, color: "#000000" };
+const BAR = ["#2e75b6", "#a6a6a6", "#7f7f7f"];
+const RED = "#ff0000", BLUE = "#0070c0";
+// 기준선 색: 넘어서면 나쁜 방향(up=클수록 나쁨)
+const BAD_DIR = {
+  debt_ebitda: "up", debt_ebitda_ttm: "up", debt_ebitda_3y: "up", netdebt_ebitda_ttm: "up", netdebt_ebitda_3y: "up",
+  dep_ratio_ttm: "up", dep_ratio_lease_ttm: "up", debt_ratio: "up", leverage_3y: "up",
+};
+
+// 선 스타일: 기간 창이 길수록 진하고 굵게(3년 누적=검정 굵게, 4분기 누적=회색)
+const baseKey = (x) => x.replace(/_(ttm|3y)$/, "");
+// 같은 지표를 기간 창만 달리해 비교하는 차트인지(예: op_margin, op_margin_ttm, op_margin_3y)
+const sameFamily = (keys) => keys.some((x) => /_(ttm|3y)$/.test(x)) && new Set(keys.map(baseKey)).size === 1;
+
+function lineStyle(key, keys, i) {
+  const windowed = sameFamily(keys);
+  if (keys.length === 1) return { color: "#000000", width: 2.25 };
+  if (windowed) {
+    const has3y = keys.some((k) => k.endsWith("_3y"));
+    if (key.endsWith("_3y")) return { color: "#000000", width: 2.25 };
+    if (key.endsWith("_ttm")) return has3y ? { color: "#a6a6a6", width: 1.5 } : { color: "#000000", width: 2.25 };
+    return { color: "#c9c9c9", width: 1 };
+  }
+  return [{ color: "#000000", width: 2.25 }, { color: "#a6a6a6", width: 1.5 }, { color: BLUE, width: 1.5 }][i] || { color: "#7f7f7f", width: 1 };
+}
+
+// 그림 복사 버튼(클립보드에 PNG)
+const COPY_ICON = { width: 24, height: 24, path: "M8 2h14v14h-6v-2h4V4H10v4H8z M2 8h12v14H2z M4 10v10h8V10z" };
+async function copyChart(gd) {
+  const opts = { format: "png", width: gd._fullLayout.width, height: gd._fullLayout.height, scale: 2 };
+  try {
+    // 클릭 직후 바로 write 를 호출해야 브라우저가 허용한다(이미지는 Promise 로 넘김)
+    const blob = Plotly.toImage(gd, opts).then((url) => fetch(url)).then((r) => r.blob());
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    toast("그림을 복사했어요. 엑셀·파워포인트에 붙여넣기 하세요");
+  } catch (e) {
+    // 클립보드 권한이 없는 환경이면 PNG 파일로 대신 저장
+    Plotly.downloadImage(gd, { ...opts, filename: gd.dataset.fname || "chart" });
+    toast("이 브라우저에선 복사가 막혀 있어 PNG로 저장했어요");
+  }
+}
+function toast(msg) {
+  let t = $("#toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+  t.textContent = msg; t.classList.add("on");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 1600);
+}
+
+// 범례는 짧게: 같은 지표의 기간 창 비교 차트면 창 이름만(예: "4분기 누적", "3년 누적")
+const PLAIN_LEG = { op_margin: "분기", debt_ebitda: "분기(연율화)", dep_ratio: "분기말", debt_ratio: "분기말", leverage: "분기말" };
+function legendName(k, keys) {
+  if (!sameFamily(keys)) return label(k);
+  if (k.endsWith("_3y")) return "3년 누적";
+  if (k.endsWith("_ttm")) return state.freq === "A" ? "연간" : "4분기 누적";
+  return state.freq === "A" ? "연간" : PLAIN_LEG[k] || "분기";
+}
+
+// 도구모음 한글 이름
+Plotly.register({ moduleType: "locale", name: "ko", dictionary: {
+  "Download plot as a png": "그림 저장(PNG)", "Download plot as a PNG": "그림 저장(PNG)", "Zoom": "확대 영역 선택", "Pan": "이동",
+  "Zoom in": "확대", "Zoom out": "축소", "Autoscale": "자동 범위", "Reset axes": "원래대로",
+} });
+
+function disposeCharts() { charts.forEach((el) => Plotly.purge(el)); charts = []; }
+
+function chartTitle(def, unit) {
+  let t = def.t;
+  if (state.freq === "A") t = t.replace("(4분기 누적, YoY)", "(YoY)").replace("(4분기 누적)", "").replace("4분기 누적", "연간").trim();
+  return unit === "억원" ? `${t} (억원)` : t;
+}
 
 function renderCharts(v) {
   disposeCharts();
@@ -173,89 +244,89 @@ function renderCharts(v) {
   const box = $("#charts");
   box.hidden = false;
   box.innerHTML = "";
-  const colors = [css("--s1"), css("--s2"), css("--s3"), css("--s4")];
-  const ink = css("--muted"), grid = css("--grid"), ref = css("--ref"), surface = css("--card"), fg = css("--fg");
   const cats = v.periods.map((p, i) => periodLabel(p, state.freq) + (v.prelim[i] ? "*" : ""));
+
+  // x축 눈금: 연도만 'YY (분기는 1분기 위치). 기간이 길면 2년 간격
+  const years = new Set(v.periods.map((p) => p.slice(0, 4))).size;
+  const every = years > 12 ? 2 : 1;
+  const tickIdx = v.periods.map((p, i) => i).filter((i) => {
+    const p = v.periods[i];
+    const y = +p.slice(0, 4);
+    return (state.freq === "A" || p.endsWith("-03")) && y % every === 0;
+  });
+  const tickvals = tickIdx.map((i) => cats[i]);
+  const ticktext = tickIdx.map((i) => "'" + v.periods[i].slice(2, 4));
 
   CHARTS[state.tab].forEach((def) => {
     const keys = seriesKeys(def.s).filter((k) => META[k] && v.b.values[k]);
     const unit = META[keys[0]].unit;
     const card = document.createElement("div");
     card.className = "card";
-    const th = [...new Set(keys.flatMap((k) => META[k].thresholds || []))];
-    const leg = keys.length > 1 || th.length
-      ? `<div class="legend">${keys.map((k, i) => `<span><i style="background:${colors[i]}"></i>${label(k)}</span>`).join("")}` +
-        (th.length ? `<span><i class="dash"></i>기준선</span>` : "") + `</div>` : "";
-    card.innerHTML = `<h4>${state.freq === "A" ? def.t.replace("(4분기 누적, YoY)", "(YoY)").replace("(4분기 누적)", "").replace("4분기 누적", "연간") : def.t}<span class="u">${unit === "억원" ? "억원" : unit}</span></h4>${leg}<div class="chart"></div>`;
+    card.innerHTML = `<div class="chart"></div>`;
     box.appendChild(card);
-
-    const series = keys.map((k, si) => {
-      const raw = v.b.values[k].slice(v.start);
-      const data = raw.map((x, i) => {
-        const y = plotVal(x, unit);
-        if (def.type !== "bar") return y;
-        return { value: y, itemStyle: { borderRadius: y < 0 ? [0, 0, 4, 4] : [4, 4, 0, 0], opacity: v.prelim[i] ? 0.45 : 1 } };
-      });
-      const s = {
-        name: label(k), type: def.type, data, color: colors[si],
-        emphasis: { focus: "none" },
-      };
-      if (def.type === "bar") Object.assign(s, { barMaxWidth: 18, barGap: "15%" });
-      else Object.assign(s, { lineStyle: { width: 2 }, symbol: "circle", symbolSize: 8, showSymbol: false, connectNulls: false });
-      if (si === 0 && th.length) {
-        s.markLine = {
-          silent: true, symbol: "none",
-          lineStyle: { color: ref, type: "dashed", width: 1 },
-          label: { color: ink, fontSize: 10, formatter: (p) => fmt(unit === "%" ? p.value / 100 : p.value, unit), position: "insideEndTop" },
-          data: th.map((t) => ({ yAxis: plotVal(t, unit) })),
-        };
-      }
-      return s;
-    });
-
-    const has = series.some((s) => s.data.some((x) => (x && typeof x === "object" ? x.value : x) != null));
     const el = card.querySelector(".chart");
-    if (!has) { el.className = "empty"; el.textContent = "이 기간에 데이터가 없어요"; return; }
 
-    const ch = echarts.init(el, null, { renderer: "svg" });
-    ch.setOption({
-      animation: false,
-      grid: { left: 8, right: 12, top: 14, bottom: 4, containLabel: true },
-      tooltip: {
-        trigger: "axis", axisPointer: { type: def.type === "bar" ? "shadow" : "line", lineStyle: { color: ink } },
-        backgroundColor: surface, borderColor: grid, textStyle: { color: fg, fontSize: 12 },
-        formatter: (ps) => {
-          const i = ps[0].dataIndex;
-          let h = `<b>${periodLabel(v.periods[i], state.freq)}</b>${v.prelim[i] ? " (잠정)" : ""}`;
-          ps.forEach((p) => {
-            const val = p.value == null ? null : (unit === "%" ? p.value / 100 : p.value);
-            h += `<br>${p.marker}${p.seriesName}: <b>${fmt(val, unit)}</b>`;
-          });
-          return h;
-        },
-      },
-      xAxis: { type: "category", data: cats, axisLine: { lineStyle: { color: grid } }, axisTick: { show: false },
-               axisLabel: { color: ink, fontSize: 10, hideOverlap: true } },
-      yAxis: { type: "value", scale: def.type === "line" && unit !== "억원", splitLine: { lineStyle: { color: grid } },
-               ...thresholdRange(series, th.map((t) => plotVal(t, unit))),
-               axisLabel: { color: ink, fontSize: 10, formatter: axisFmt(unit) } },
-      series,
+    const traces = keys.map((k, i) => {
+      const y = v.b.values[k].slice(v.start).map((x) => plotVal(x, unit));
+      const hv = unit === "%" ? "%{y:.1f}%" : unit === "배" ? "%{y:.2f}배" : "%{y:,.0f}억";
+      const nm = legendName(k, keys);
+      const t = { type: def.type === "bar" ? "bar" : "scatter", name: nm, x: cats, y,
+                  hovertemplate: `${hv}<extra>${nm}</extra>` };
+      if (def.type === "bar") {
+        t.marker = { color: y.map((_, j) => (v.prelim[j] ? "#bdd7ee" : BAR[i] || BAR[0])) };
+      } else {
+        t.mode = "lines";
+        t.line = lineStyle(k, keys, i);
+        t.connectgaps = false;
+      }
+      return t;
     });
-    charts.push(ch);
-  });
-}
+    if (!traces.some((t) => t.y.some((y) => y != null))) {
+      el.className = "chart empty"; el.textContent = "이 기간에 데이터가 없어요"; return;
+    }
 
-// 기준선이 데이터 범위 밖이면 축을 넓혀 보이게 한다(눈금이 깔끔하도록 반올림)
-function thresholdRange(series, ths) {
-  if (!ths.length) return {};
-  const ys = series.flatMap((s) => s.data.map((x) => (x && typeof x === "object" ? x.value : x))).filter((y) => y != null);
-  if (!ys.length) return {};
-  let lo = Math.min(...ys), hi = Math.max(...ys);
-  const tlo = Math.min(...ths), thi = Math.max(...ths);
-  if (tlo >= lo && thi <= hi) return {};
-  lo = Math.min(lo, tlo); hi = Math.max(hi, thi);
-  const step = Math.pow(10, Math.floor(Math.log10(hi - lo || 1))) / 2;
-  return { min: Math.floor((lo - step * 0.2) / step) * step, max: Math.ceil((hi + step * 0.2) / step) * step };
+    // 기준선: 하나면 빨강, 둘이면 나쁜 쪽 빨강·좋은 쪽 파랑 (점선)
+    const th = [...new Set(keys.flatMap((k) => META[k].thresholds || []))].sort((a, b) => a - b);
+    const dir = keys.map((k) => BAD_DIR[k]).find(Boolean) || "down";
+    const shapes = th.map((t, i) => {
+      const bad = th.length === 1 || (dir === "up" ? i === th.length - 1 : i === 0);
+      return { type: "line", xref: "paper", x0: 0, x1: 1, y0: plotVal(t, unit), y1: plotVal(t, unit),
+               line: { color: bad ? RED : BLUE, width: 1.5, dash: "dash" }, layer: "below" };
+    });
+
+    const legend = traces.length > 1;
+    const layout = {
+      font: FONT,
+      paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
+      title: { text: chartTitle(def, unit), x: 0.5, xanchor: "center", y: 0.985, yanchor: "top", font: { ...FONT } },
+      showlegend: legend,
+      legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1.0, yanchor: "bottom", font: FONT,
+                bgcolor: "rgba(0,0,0,0)", itemwidth: 30, tracegroupgap: 0 },
+      margin: { l: 38, r: 10, t: legend ? 38 : 24, b: 22, pad: 2 },
+      barmode: "group", bargap: 0.25, bargroupgap: 0.05,
+      hovermode: "x unified",
+      hoverlabel: { bgcolor: "#ffffff", bordercolor: "#a6a6a6", font: { ...FONT, size: 11 } },
+      xaxis: { type: "category", tickmode: "array", tickvals, ticktext, tickangle: 0,
+               unifiedhovertitle: { text: "<b>%{x}</b>" },
+               showline: false, showgrid: false, zeroline: false, ticks: "", fixedrange: false },
+      yaxis: { showline: false, showgrid: false, ticks: "", zeroline: unit !== "억원" ? false : true,
+               zerolinecolor: "#d9d9d9", zerolinewidth: 1,
+               ticksuffix: unit === "%" ? "%" : unit === "배" ? "배" : "", tickformat: unit === "억원" ? "," : "",
+               rangemode: def.type === "bar" ? "tozero" : "normal" },
+      shapes,
+    };
+    const config = {
+      responsive: true, displaylogo: false, displayModeBar: "hover", locale: "ko",
+      modeBarButtons: [
+        [{ name: "그림 복사", icon: COPY_ICON, click: (gd) => copyChart(gd) }, "toImage"],
+        ["zoom2d", "pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
+      ],
+      toImageButtonOptions: { format: "png", filename: `${state.comp.name}_${chartTitle(def, unit)}`, scale: 2 },
+    };
+    el.dataset.fname = config.toImageButtonOptions.filename;
+    Plotly.newPlot(el, traces, layout, config);
+    charts.push(el);
+  });
 }
 
 function renderTable(v) {
@@ -320,8 +391,6 @@ function bind() {
     document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === t));
     render();
   });
-  window.addEventListener("resize", () => charts.forEach((c) => c.resize()));
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 }
 
 fetch(DATA_URL)
