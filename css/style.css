@@ -78,3 +78,4 @@ th.l, td.l { text-align:left; position:sticky; left:0; background:var(--bg); z-i
 th.l { background:var(--head); z-index:3; }
 tr.grp td { background:var(--head); font-weight:700; text-align:left; }
 th.pre { color:var(--muted); }
+.placeholder { grid-column:1/-1; padding:48px 0; text-align:center; }

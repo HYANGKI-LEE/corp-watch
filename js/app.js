@@ -2,12 +2,14 @@
 const DATA_URL = "output/metrics.json";
 
 // 탭별 차트 구성. type: bar(분기 발생액) | line(비율·잔액)
+// y2: 오른쪽 축(우)에 선으로 그릴 지표, qOnly: 분기 주기에서만 그림(연간이면 앞 차트와 같아짐)
 const CHARTS = {
+  "Main": [],
   "수익성": [
-    { t: "매출액", type: "bar", s: ["revenue"] },
+    { t: "매출액", type: "bar", s: ["revenue"], y2: ["revenue_yoy"], n: "매출액", n2: "YoY(우)" },
+    { t: "매출액(4분기 누적)", type: "bar", s: ["revenue_ttm"], y2: ["revenue_growth"], qOnly: true, n: "매출액", n2: "YoY(우)" },
     { t: "영업이익·EBITDA", type: "bar", s: ["op", "ebitda"] },
     { t: "당기순이익", type: "bar", s: ["ni"] },
-    { t: "매출증가율(4분기 누적, YoY)", type: "bar", s: ["revenue_growth"] },
     { t: "영업이익률", type: "line", s: ["op_margin", "op_margin_ttm", "op_margin_3y"] },
     { t: "EBITDA마진", type: "line", s: ["ebitda_margin_ttm", "ebitda_margin_3y"] },
     { t: "매출원가율", type: "line", s: ["cogs_ratio"] },
@@ -276,7 +278,13 @@ function renderCharts(v) {
   const yearStart = v.periods.map((p, i) => i).filter((i) => state.freq === "A" || v.periods[i].endsWith("-03"));
   const lblIdx = yearStart.filter((i) => +v.periods[i].slice(0, 4) % every === 0);
 
+  if (!CHARTS[state.tab].length) {
+    box.innerHTML = `<p class="muted placeholder">신용평가사들이 자주 보는 핵심 지표로 채울 예정이에요.</p>`;
+    return;
+  }
+
   CHARTS[state.tab].forEach((def) => {
+    if (def.qOnly && state.freq !== "Q") return;
     const keys = seriesKeys(def.s).filter((k) => META[k] && v.b.values[k]);
     const unit = META[keys[0]].unit;
     const card = document.createElement("div");
@@ -291,7 +299,7 @@ function renderCharts(v) {
     const traces = keys.map((key, i) => {
       const y = v.b.values[key].slice(v.start).map((x) => plotVal(x, unit));
       const hv = unit === "%" ? "%{y:.1f}%" : unit === "배" ? "%{y:.2f}배" : "%{y:,.0f}억";
-      const nm = legendName(key, keys);
+      const nm = def.n || legendName(key, keys);
       const t = { type: def.type === "bar" ? "bar" : "scatter", name: nm, x: cats, y,
                   hovertemplate: `${hv}<extra>${nm}</extra>` };
       if (def.type === "bar") {
@@ -304,6 +312,19 @@ function renderCharts(v) {
       }
       return t;
     });
+    // 오른쪽 축(우) 선
+    const keys2 = (def.y2 || []).filter((k) => META[k] && v.b.values[k]);
+    const unit2 = keys2.length ? META[keys2[0]].unit : null;
+    const traces2 = keys2.map((key, i) => {
+      const y = v.b.values[key].slice(v.start).map((x) => plotVal(x, unit2));
+      const hv = unit2 === "%" ? "%{y:.1f}%" : unit2 === "배" ? "%{y:.2f}배" : "%{y:,.0f}억";
+      const nm = def.n2 || label(key) + "(우)";
+      return { type: "scatter", mode: "lines", yaxis: "y2", name: nm, x: cats, y, connectgaps: false,
+               line: { color: ["#c00000", "#000000"][i] || "#7f7f7f", width: 4.5 * k, shape: "spline", smoothing: 0.5 },
+               hovertemplate: `${hv}<extra>${nm}</extra>` };
+    });
+    const ys2 = traces2.flatMap((t) => t.y).filter((y) => y != null);
+    const ax2 = ys2.length ? niceAxis(Math.min(...ys2), Math.max(...ys2)) : null;
     const ys = traces.flatMap((t) => t.y).filter((y) => y != null);
     if (!ys.length) { el.className = "chart empty"; el.textContent = "이 기간에 데이터가 없어요"; return; }
 
@@ -336,7 +357,11 @@ function renderCharts(v) {
       }),
     ];
 
-    const legend = traces.length > 1;
+    const legend = traces.length + traces2.length > 1;
+    const axisStyle = { showline: true, linecolor: AXIS, linewidth: REF.axis * k,
+      ticks: "outside", ticklen: REF.tick * k, tickwidth: REF.axis * k, tickcolor: AXIS,
+      ticklabelstandoff: REF.yStand * k, showgrid: false, zeroline: false, automargin: false };
+    const fmtOf = (u) => ({ ticksuffix: u === "%" ? "%" : u === "배" ? "배" : "", tickformat: u === "억원" ? "," : "" });
     const layout = {
       width: W, height: H, font,
       paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
@@ -346,7 +371,7 @@ function renderCharts(v) {
       // 범례는 엑셀 견본처럼 그림 영역 안쪽 위
       legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1, yanchor: "top", font,
                 bgcolor: "rgba(0,0,0,0)", itemwidth: Math.max(30, REF.legItem * k), tracegroupgap: 0 },
-      margin: { l: REF.l * k, r: REF.r * k, t: REF.t * k, b: REF.b * k, pad: 0 },
+      margin: { l: REF.l * k, r: (ax2 ? REF.l : REF.r) * k, t: REF.t * k, b: REF.b * k, pad: 0 },
       barmode: "group", bargap: 0.25, bargroupgap: 0.05,
       hovermode: "x unified",
       hoverlabel: { bgcolor: "#ffffff", bordercolor: "#a6a6a6", font: { family: FONT_FAMILY, size: 11, color: "#000000" } },
@@ -358,11 +383,9 @@ function renderCharts(v) {
                ticks: atBottom ? "outside" : "", tickson: "boundaries", ticklen: REF.tick * k,
                tickwidth: REF.axis * k, tickcolor: AXIS,
                showgrid: false, zeroline: false, automargin: false },
-      yaxis: { range: [ax.min, ax.max], tick0: ax.min, dtick: ax.step, autorange: false,
-               showline: true, linecolor: AXIS, linewidth: REF.axis * k,
-               ticks: "outside", ticklen: REF.tick * k, tickwidth: REF.axis * k, tickcolor: AXIS,
-               ticklabelstandoff: REF.yStand * k, showgrid: false, zeroline: false, automargin: false,
-               ticksuffix: unit === "%" ? "%" : unit === "배" ? "배" : "", tickformat: unit === "억원" ? "," : "" },
+      yaxis: { range: [ax.min, ax.max], tick0: ax.min, dtick: ax.step, autorange: false, ...axisStyle, ...fmtOf(unit) },
+      ...(ax2 ? { yaxis2: { overlaying: "y", side: "right", range: [ax2.min, ax2.max], tick0: ax2.min, dtick: ax2.step,
+                            autorange: false, ...axisStyle, ...fmtOf(unit2) } } : {}),
       shapes,
       annotations: lblIdx.map((i) => ({
         xref: "x", x: i - 0.5, yref: "paper", y: 0, yanchor: "top", xanchor: "center",
@@ -378,7 +401,7 @@ function renderCharts(v) {
       toImageButtonOptions: { format: "png", filename: `${state.comp.name}_${chartTitle(def, unit)}`, scale: 2 },
     };
     el.dataset.fname = config.toImageButtonOptions.filename;
-    Plotly.newPlot(el, traces, layout, config);
+    Plotly.newPlot(el, [...traces, ...traces2], layout, config);
     charts.push(el);
   });
 }

@@ -138,6 +138,7 @@ def compute(r: dict, w: int, w3: int, k: int) -> dict:
     m["revenue"] = r["revenue"]
     m["revenue_ttm"] = S(r["revenue"], w)
     m["revenue_growth"] = div(m["revenue_ttm"], m["revenue_ttm"].shift(w)) - 1
+    m["revenue_yoy"] = div(r["revenue"], r["revenue"].shift(w)) - 1
     m["cogs_ratio"] = div(r["cogs"], r["revenue"])
     m["opex"] = r["cogs"] + r["sga"]
     m["op"] = r["op"]
