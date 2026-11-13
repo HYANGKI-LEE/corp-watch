@@ -166,8 +166,11 @@ function renderKpis(v) {
 }
 
 // ---------------------------------------------------------------- 차트 (엑셀 스타일, Plotly)
-const PT7 = 7 * 96 / 72;            // 엑셀 7pt -> px
-const FONT = { family: "'Malgun Gothic','맑은 고딕',sans-serif", size: PT7, color: "#000000" };
+// 기준 크기 = 엑셀 차트 가로 8cm x 세로 6cm (96dpi). 글꼴·선·여백을 이 크기 기준으로 정하고,
+// 화면에 그릴 때는 실제 폭에 맞춰 전부 같은 비율로 키운다 -> 어느 폭에서 보든 엑셀 그림과 비율이 같다.
+const BASE_W = 8 / 2.54 * 96;       // 302.4px
+const PT = (pt) => pt * 96 / 72;    // pt -> px (기준 크기에서)
+const FONT_FAMILY = "'Malgun Gothic','맑은 고딕',sans-serif";
 const BAR = ["#2e75b6", "#a6a6a6", "#7f7f7f"];
 const RED = "#ff0000", BLUE = "#0070c0";
 // 기준선 색: 넘어서면 나쁜 방향(up=클수록 나쁨)
@@ -183,14 +186,16 @@ const sameFamily = (keys) => keys.some((x) => /_(ttm|3y)$/.test(x)) && new Set(k
 
 function lineStyle(key, keys, i) {
   const windowed = sameFamily(keys);
-  if (keys.length === 1) return { color: "#000000", width: 2.25 };
+  // 굵기는 엑셀 pt 기준(2.25pt 굵게, 1.5pt 보통, 0.75pt 가늘게)
+  const thick = { color: "#000000", width: PT(2.25) };
+  if (keys.length === 1) return thick;
   if (windowed) {
     const has3y = keys.some((k) => k.endsWith("_3y"));
-    if (key.endsWith("_3y")) return { color: "#000000", width: 2.25 };
-    if (key.endsWith("_ttm")) return has3y ? { color: "#a6a6a6", width: 1.5 } : { color: "#000000", width: 2.25 };
-    return { color: "#c9c9c9", width: 1 };
+    if (key.endsWith("_3y")) return thick;
+    if (key.endsWith("_ttm")) return has3y ? { color: "#a6a6a6", width: PT(1.5) } : thick;
+    return { color: "#c9c9c9", width: PT(0.75) };
   }
-  return [{ color: "#000000", width: 2.25 }, { color: "#a6a6a6", width: 1.5 }, { color: BLUE, width: 1.5 }][i] || { color: "#7f7f7f", width: 1 };
+  return [thick, { color: "#a6a6a6", width: PT(2.25) }, { color: BLUE, width: PT(1.5) }][i] || { color: "#7f7f7f", width: PT(0.75) };
 }
 
 // 그림 복사 버튼(클립보드에 PNG)
@@ -265,18 +270,22 @@ function renderCharts(v) {
     card.innerHTML = `<div class="chart"></div>`;
     box.appendChild(card);
     const el = card.querySelector(".chart");
+    const W = el.clientWidth, H = W * 6 / 8;
+    const k = W / BASE_W;                       // 기준(8cm) 대비 배율
+    const font = { family: FONT_FAMILY, size: PT(7) * k, color: "#000000" };
 
-    const traces = keys.map((k, i) => {
-      const y = v.b.values[k].slice(v.start).map((x) => plotVal(x, unit));
+    const traces = keys.map((key, i) => {
+      const y = v.b.values[key].slice(v.start).map((x) => plotVal(x, unit));
       const hv = unit === "%" ? "%{y:.1f}%" : unit === "배" ? "%{y:.2f}배" : "%{y:,.0f}억";
-      const nm = legendName(k, keys);
+      const nm = legendName(key, keys);
       const t = { type: def.type === "bar" ? "bar" : "scatter", name: nm, x: cats, y,
                   hovertemplate: `${hv}<extra>${nm}</extra>` };
       if (def.type === "bar") {
         t.marker = { color: y.map((_, j) => (v.prelim[j] ? "#bdd7ee" : BAR[i] || BAR[0])) };
       } else {
         t.mode = "lines";
-        t.line = lineStyle(k, keys, i);
+        const ls = lineStyle(key, keys, i);
+        t.line = { color: ls.color, width: ls.width * k };
         t.connectgaps = false;
       }
       return t;
@@ -291,21 +300,24 @@ function renderCharts(v) {
     const shapes = th.map((t, i) => {
       const bad = th.length === 1 || (dir === "up" ? i === th.length - 1 : i === 0);
       return { type: "line", xref: "paper", x0: 0, x1: 1, y0: plotVal(t, unit), y1: plotVal(t, unit),
-               line: { color: bad ? RED : BLUE, width: 1.5, dash: "dash" }, layer: "below" };
+               line: { color: bad ? RED : BLUE, width: PT(1.5) * k, dash: "dash" }, layer: "below" };
     });
 
     const legend = traces.length > 1;
     const layout = {
-      font: FONT,
+      width: W, height: H,
+      font,
       paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
-      title: { text: chartTitle(def, unit), x: 0.5, xanchor: "center", y: 0.985, yanchor: "top", font: { ...FONT } },
+      // 제목은 엑셀처럼 본문보다 조금 크게(9pt)
+      title: { text: chartTitle(def, unit), x: 0.5, xanchor: "center", y: 1 - 4 * k / H, yanchor: "top",
+               font: { ...font, size: PT(9) * k } },
       showlegend: legend,
-      legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1.0, yanchor: "bottom", font: FONT,
-                bgcolor: "rgba(0,0,0,0)", itemwidth: 30, tracegroupgap: 0 },
-      margin: { l: 38, r: 10, t: legend ? 38 : 24, b: 22, pad: 2 },
+      legend: { orientation: "h", x: 0.5, xanchor: "center", y: 1.0, yanchor: "bottom", font,
+                bgcolor: "rgba(0,0,0,0)", itemwidth: Math.max(30, 22 * k), tracegroupgap: 0 },
+      margin: { l: 30 * k, r: 8 * k, t: (legend ? 36 : 22) * k, b: 16 * k, pad: 2 * k },
       barmode: "group", bargap: 0.25, bargroupgap: 0.05,
       hovermode: "x unified",
-      hoverlabel: { bgcolor: "#ffffff", bordercolor: "#a6a6a6", font: { ...FONT, size: 11 } },
+      hoverlabel: { bgcolor: "#ffffff", bordercolor: "#a6a6a6", font: { family: FONT_FAMILY, size: 11, color: "#000000" } },
       xaxis: { type: "category", tickmode: "array", tickvals, ticktext, tickangle: 0,
                unifiedhovertitle: { text: "<b>%{x}</b>" },
                showline: false, showgrid: false, zeroline: false, ticks: "", fixedrange: false },
@@ -316,7 +328,7 @@ function renderCharts(v) {
       shapes,
     };
     const config = {
-      responsive: true, displaylogo: false, displayModeBar: "hover", locale: "ko",
+      responsive: false, displaylogo: false, displayModeBar: "hover", locale: "ko",
       modeBarButtons: [
         [{ name: "그림 복사", icon: COPY_ICON, click: (gd) => copyChart(gd) }, "toImage"],
         ["zoom2d", "pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
@@ -384,6 +396,11 @@ function bind() {
   $("#range").addEventListener("click", (e) => {
     const v = e.target.dataset.v; if (v == null) return;
     state.range = +v; render();
+  });
+  let rh;
+  window.addEventListener("resize", () => {
+    clearTimeout(rh);
+    rh = setTimeout(() => { if (state.tab !== "표" && state.comp) renderCharts(view()); }, 200);
   });
   $("#tabs").addEventListener("click", (e) => {
     const t = e.target.dataset.tab; if (!t) return;
